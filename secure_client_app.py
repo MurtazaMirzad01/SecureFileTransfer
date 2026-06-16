@@ -276,59 +276,74 @@ class SecureTransferApp:
             self.client_socket.close()
 
     def process_incoming_crypto_package(self, sender, data_buffer):
-        """Processes and decrypted an incoming encrypted package."""
+        """Processes and decrypts an incoming encrypted package with explicit hardening."""
         try:
+            # Explicitly notify UI of operational stages
             self.aes_status_var.set("⏳ Unwrapping incoming cryptograms...")
             self.rsa_status_var.set("⏳ Processing key envelope...")
             self.sig_status_var.set("⏳ Re-evaluating sender signature...")
-            
+
+            # Defensive check: ensure packet data buffer meets absolute minimum size requirement
+            # 12 bytes (Header lengths) + 256 bytes (RSA 2048 block) + 12 bytes (GCM Nonce) + 256 bytes (Signature)
+            if len(data_buffer) < 536:
+                raise ValueError("Payload buffer size underflow. Packet structurally corrupted.")
+
             # Struct parsing offset positions
             len_key, len_nonce, len_sig = struct.unpack("!III", data_buffer[:12])
-            
+
             start_key = 12
             start_nonce = start_key + len_key
             start_sig = start_nonce + len_nonce
             start_cipher = start_sig + len_sig
-            
+
             encrypted_aes_key = data_buffer[start_key:start_nonce]
             nonce = data_buffer[start_nonce:start_sig]
             signature = data_buffer[start_sig:start_cipher]
             ciphertext = data_buffer[start_cipher:]
-            
-            # Decryption Pipeline Actions
+
+            # Load private key of local client and public key of remote sender
             my_private_key = crypto_core.load_private_key(self.username)
             sender_public_key = crypto_core.load_public_key(sender)
-            
-            # A. Decrypt the Session Key
+
+            # A. Decrypt the Session Key (Confidentiality Perimeter)
             aes_key = crypto_core.decrypt_aes_key(my_private_key, encrypted_aes_key)
             self.rsa_status_var.set("✅ RSA Session Key Envelope Verified")
-            
-            # B. Plaintext deciphering
+
+            # B. Plaintext deciphering (Symmetric Decryption)
             decrypted_plaintext = crypto_core.decrypt_file_aes(ciphertext, aes_key, nonce)
             self.aes_status_var.set("✅ Plaintext recovered from AES-256-GCM")
-            
-            # C. Signature and hashing evaluations
+
+            # C. Signature and hashing evaluations (Integrity & Authentication Perimeter)
             local_hash = crypto_core.calculate_sha256(decrypted_plaintext)
             signature_valid = crypto_core.verify_signature(sender_public_key, local_hash.encode('utf-8'), signature)
-            
+
             if signature_valid:
                 self.sig_status_var.set("✅ Digital Signature VERIFIED and trusted")
-                
-                # Prompt user for save destination frame location
+
                 output_name = f"gui_received_from_{sender}.txt"
                 with open(output_name, "wb") as f:
                     f.write(decrypted_plaintext)
-                    
+
                 self.append_log(f"[SUCCESS] Complete validation! Saved payload as '{output_name}'")
-                self.root.after(0, lambda: messagebox.showinfo("Secure Receipt", f"New verified data payload safely saved as:\n{output_name}"))
+                self.root.after(0, lambda: messagebox.showinfo("Secure Receipt",
+                                                               f"New verified data payload safely saved as:\n{output_name}"))
             else:
                 self.sig_status_var.set("❌ CRITICAL: Digital Signature FAILED!")
-                self.append_log("[SECURITY FRAUD ALERT] Digital signature verification failed! Discarding payload data.")
-                
-        except Exception as err:
-            self.append_log(f"[DECRYPTION ERROR] Malformed envelope payload processing failure: {err}")
-            self.aes_status_var.set("❌ Cryptographic verification breakdown")
+                self.append_log(
+                    "[SECURITY FRAUD ALERT] Digital signature verification failed! Discarding payload data.")
+                self.root.after(0, lambda: messagebox.showerror("Security Failure",
+                                                                "Digital signature invalid. Data dropped."))
 
+        except Exception as err:
+            self.append_log(f"[DECRYPTION ERROR] Processing failure: {err}")
+            self.aes_status_var.set("❌ Cryptographic verification breakdown")
+            self.rsa_status_var.set("❌ Envelope extraction dropped")
+            self.sig_status_var.set("❌ Content signature untrusted")
+            self.root.after(0, lambda: messagebox.showerror("Decryption Error",
+                                                            f"Failed to decrypt package safely:\n{err}"))
+        finally:
+            # Re-enable send interaction window controls for continuous file operations
+            self.root.after(1000, self.reset_status_indicators)
 
 if __name__ == "__main__":
     root = tk.Tk()
