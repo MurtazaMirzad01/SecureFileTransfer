@@ -1,0 +1,12 @@
+# Ignore the Python virtual environment
+venv/
+__pycache__/
+*.pyc
+
+# Ignore secret private keys and generated certificates
+*_private.pem
+*_public.pem
+
+# Ignore temporary test outputs
+test_crypto.py
+.idea
