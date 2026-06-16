@@ -1,1 +1,0 @@
-This is top-secret data passing through an AES-GCM secure envelope!
